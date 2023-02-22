@@ -14,6 +14,8 @@ name = "libredisproxy"
 path = "src/lib.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"]}
+dashmap = "5"
 crc16 = "0.4"
 memchr = "2"
 btoi = "0.4"

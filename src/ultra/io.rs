@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{Sender, Receiver};
 use tokio::sync::mpsc::error::SendError;
 use tokio_util::codec::Decoder;
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Result};
 use std::future::Future;
 
 type ConnSink<T> = Pin<Box<dyn Sink<T, Error = Error> + Send>>;
@@ -32,6 +32,26 @@ impl Conn {
         let reader = Box::pin(rx);
         Self {writer, reader}
     }
+}
+
+pub async fn new_io_group(id: usize, backend_address: String) -> Result<(IOGroupHandle, IOGroup)> {
+    let sock = TcpStream::connect(&backend_address).await?;
+    let backend = Backend::new(Conn::new(sock));
+
+    let (client_sender, client_receiver) = tokio::sync::mpsc::channel(128);
+    let session_count = Arc::new(AtomicUsize::new(0));
+    let handle = IOGroupHandle{
+        id,
+        client_sender,
+        session_count: session_count.clone(),
+    };
+    let group = IOGroup {
+        id,
+        session_count,
+        client_receiver,
+        backend,
+    };
+    Ok((handle, group))
 }
 
 pub struct IOGroupHandle {
@@ -98,7 +118,7 @@ impl IOGroup {
             }
 
             Poll::Pending
-        });
+        }).await;
 
         Ok(())
     }
@@ -294,7 +314,7 @@ impl Session {
                     };
                 }
             };
-            writer.as_mut().start_send(packet.get_bytes());
+            writer.as_mut().start_send(packet.get_bytes())?;
         }
     }
 }

@@ -5,4 +5,25 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "ultra-redis-proxy"
+path = "bin/ultra.rs"
+
+[lib]
+name = "libredisproxy"
+path = "src/lib.rs"
+
 [dependencies]
+crc16 = "0.4"
+memchr = "2"
+btoi = "0.4"
+bytes = "1"
+anyhow = "1"
+futures = "0.3"
+futures-util = "0.3"
+tokio = { version = "1.21", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+pin-project = "1"
+

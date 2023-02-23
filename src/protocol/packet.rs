@@ -8,7 +8,7 @@ use crate::common::utils::{
     get_command_len, left_trim_array, ThreadSafe,
 };
 use crate::protocol::EncodeError;
-use bytes::{BytesMut, Bytes};
+use bytes::{Bytes, BytesMut};
 use std::io;
 use std::marker::PhantomData;
 use std::str;
@@ -266,8 +266,8 @@ impl EncodedPacket for Bytes {
     type Hint = ();
 
     fn encode<F>(self, mut f: F) -> io::Result<(usize, F)>
-        where
-            F: FnMut(&[u8]),
+    where
+        F: FnMut(&[u8]),
     {
         f(&self);
         Ok((self.len(), f))

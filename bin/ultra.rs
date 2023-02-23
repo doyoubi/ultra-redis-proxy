@@ -7,7 +7,7 @@ struct Args {
     proxy_address: String,
 
     #[arg(long, short, default_value = "127.0.0.1:6379")]
-    backend_address: String,
+    backend_addresses: String,
 
     #[arg(short, long, default_value_t = 1)]
     threads: usize,
@@ -21,9 +21,15 @@ fn main() {
 
     tracing_subscriber::fmt::init();
 
+    let backend_addresses = args
+        .backend_addresses
+        .split(',')
+        .map(|s| s.to_string())
+        .collect();
+
     let config = libredisproxy::Config {
         proxy_address: args.proxy_address,
-        backend_address: args.backend_address,
+        backend_addresses,
         group_sessions: args.group_size,
     };
 

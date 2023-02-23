@@ -1,10 +1,10 @@
-use crate::ultra::io::{IOGroupHandle, new_io_group};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::common::Config;
+use crate::ultra::io::{new_io_group, IOGroupHandle};
 use dashmap::DashMap;
 use std::net::SocketAddr;
-use tokio::net::{TcpSocket, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use crate::common::Config;
+use tokio::net::{TcpSocket, TcpStream};
 
 pub async fn run_ultra_service(config: Config) {
     tracing::info!("config: {:?}", config);
@@ -46,7 +46,11 @@ impl Service {
         }
     }
 
-    async fn add_to_group(&self, mut sock: TcpStream, client_addr: SocketAddr) -> anyhow::Result<()> {
+    async fn add_to_group(
+        &self,
+        mut sock: TcpStream,
+        client_addr: SocketAddr,
+    ) -> anyhow::Result<()> {
         loop {
             for entry in self.groups.iter() {
                 let group_handle = entry.value();
@@ -58,12 +62,17 @@ impl Service {
                     sock = c;
                     continue;
                 }
-                tracing::info!("new session {} added to group {}", client_addr, group_handle.get_id());
+                tracing::info!(
+                    "new session {} added to group {}",
+                    client_addr,
+                    group_handle.get_id()
+                );
                 return Ok(());
             }
 
             let group_id = self.group_id_gen.fetch_add(1, Ordering::Relaxed);
-            let (group_handle, group) = new_io_group(group_id, self.config.backend_address.clone()).await?;
+            let (group_handle, group) =
+                new_io_group(group_id, self.config.backend_addresses.clone()).await?;
             self.groups.insert(group_id, group_handle);
 
             tracing::info!("created a new group {}", group_id);

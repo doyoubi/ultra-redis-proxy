@@ -1,16 +1,13 @@
 use crate::protocol::IndexedResp;
-use tokio::sync::oneshot;
-use std::future::Future;
-use std::task::{Context, Poll};
-use std::pin::Pin;
 use pin_project::pin_project;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::sync::oneshot;
 
 pub fn reply_channel(req: IndexedResp) -> (ReplySender, ReplyReceiver) {
     let (s, r) = oneshot::channel();
-    let sender = ReplySender {
-        sender: s,
-        req,
-    };
+    let sender = ReplySender { sender: s, req };
     let receiver = ReplyReceiver { receiver: r };
     (sender, receiver)
 }
@@ -35,7 +32,7 @@ impl ReplySender {
 #[pin_project]
 pub struct ReplyReceiver {
     #[pin]
-    receiver: oneshot::Receiver<RespResult>
+    receiver: oneshot::Receiver<RespResult>,
 }
 
 impl Future for ReplyReceiver {
@@ -49,4 +46,3 @@ impl Future for ReplyReceiver {
         Poll::Ready(r)
     }
 }
-

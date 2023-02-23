@@ -81,9 +81,9 @@ impl<T> fmt::Display for EncodeError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match self {
             Self::NotReady(_) => "EncodeError::NotReady".to_string(),
-            Self::Io(err) => format!("EncodeError::Io({})", err),
+            Self::Io(err) => format!("EncodeError::Io({err})"),
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 

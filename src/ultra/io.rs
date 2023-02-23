@@ -1,18 +1,19 @@
-use std::collections::{VecDeque, HashMap};
-use crate::protocol::{IndexedResp, RespCodec, new_simple_packet_codec};
+use crate::common::{reply_channel, ReplyReceiver, ReplySender};
+use crate::protocol::{new_simple_packet_codec, IndexedResp, RespCodec};
+use anyhow::{anyhow, Error, Result};
 use bytes::Bytes;
+use futures::{Sink, SinkExt, Stream, StreamExt, TryStreamExt};
+use rand::prelude::SliceRandom;
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::pin::Pin;
-use futures::{Sink, Stream, StreamExt, SinkExt, TryStreamExt};
-use std::task::{Context, Poll};
-use crate::common::{ReplySender, ReplyReceiver, reply_channel};
-use tokio::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::{Sender, Receiver};
+use std::task::{Context, Poll};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::codec::Decoder;
-use anyhow::{anyhow, Error, Result};
-use std::future::Future;
 
 type ConnSink<T> = Pin<Box<dyn Sink<T, Error = Error> + Send>>;
 type ConnStream<T> = Pin<Box<dyn Stream<Item = Result<T, Error>> + Send>>;
@@ -30,17 +31,24 @@ impl Conn {
         let rx = rx.map_err(Error::from);
         let writer = Box::pin(tx);
         let reader = Box::pin(rx);
-        Self {writer, reader}
+        Self { writer, reader }
     }
 }
 
-pub async fn new_io_group(id: usize, backend_address: String) -> Result<(IOGroupHandle, IOGroup)> {
-    let sock = TcpStream::connect(&backend_address).await?;
-    let backend = Backend::new(Conn::new(sock));
+pub async fn new_io_group(
+    id: usize,
+    backend_addresses: Vec<String>,
+) -> Result<(IOGroupHandle, IOGroup)> {
+    let mut backends = Vec::with_capacity(backend_addresses.len());
+    for backend_address in backend_addresses {
+        let sock = TcpStream::connect(&backend_address).await?;
+        let backend = Backend::new(Conn::new(sock));
+        backends.push(backend);
+    }
 
     let (client_sender, client_receiver) = tokio::sync::mpsc::channel(128);
     let session_count = Arc::new(AtomicUsize::new(0));
-    let handle = IOGroupHandle{
+    let handle = IOGroupHandle {
         id,
         client_sender,
         session_count: session_count.clone(),
@@ -49,7 +57,7 @@ pub async fn new_io_group(id: usize, backend_address: String) -> Result<(IOGroup
         id,
         session_count,
         client_receiver,
-        backend,
+        backends,
     };
     Ok((handle, group))
 }
@@ -70,7 +78,10 @@ impl IOGroupHandle {
     }
 
     pub async fn add_session(&self, session_conn: TcpStream) -> Result<(), TcpStream> {
-        self.client_sender.send(session_conn).await.map_err(|SendError(conn)| conn)
+        self.client_sender
+            .send(session_conn)
+            .await
+            .map_err(|SendError(conn)| conn)
     }
 }
 
@@ -78,7 +89,7 @@ pub struct IOGroup {
     id: usize,
     session_count: Arc<AtomicUsize>,
     client_receiver: Receiver<TcpStream>,
-    backend: Backend,
+    backends: Vec<Backend>,
 }
 
 impl IOGroup {
@@ -87,7 +98,7 @@ impl IOGroup {
             id: group_id,
             session_count,
             mut client_receiver,
-            mut backend,
+            mut backends,
         } = self;
 
         let session_id_gen = AtomicUsize::new(0);
@@ -103,7 +114,7 @@ impl IOGroup {
 
             let mut err_sessions = Vec::default();
             for (id, session) in sessions.iter_mut() {
-                if session.handle(cx, &mut backend).is_err() {
+                if session.handle(cx, &mut backends).is_err() {
                     err_sessions.push(*id);
                 }
             }
@@ -113,12 +124,15 @@ impl IOGroup {
                 session_count.fetch_sub(1, Ordering::Relaxed);
             }
 
-            if backend.handle(cx).is_err() {
-                return Poll::Ready(());
+            for backend in backends.iter_mut() {
+                if backend.handle(cx).is_err() {
+                    return Poll::Ready(());
+                }
             }
 
             Poll::Pending
-        }).await;
+        })
+        .await;
 
         Ok(())
     }
@@ -181,7 +195,11 @@ impl Backend {
         }
     }
 
-    fn handle_write(writer: &mut ConnSink<Bytes>, cx: &mut Context<'_>, packets: &mut VecDeque<Bytes>)  -> anyhow::Result<()> {
+    fn handle_write(
+        writer: &mut ConnSink<Bytes>,
+        cx: &mut Context<'_>,
+        packets: &mut VecDeque<Bytes>,
+    ) -> anyhow::Result<()> {
         loop {
             match writer.as_mut().poll_ready(cx) {
                 Poll::Pending => return Ok(()),
@@ -200,7 +218,11 @@ impl Backend {
         }
     }
 
-    fn handle_read(reader: &mut ConnStream<IndexedResp>, cx: &mut Context<'_>, reqs: &mut VecDeque<ReplySender>) -> anyhow::Result<()> {
+    fn handle_read(
+        reader: &mut ConnStream<IndexedResp>,
+        cx: &mut Context<'_>,
+        reqs: &mut VecDeque<ReplySender>,
+    ) -> anyhow::Result<()> {
         loop {
             let packet_res = match reader.as_mut().poll_next(cx) {
                 Poll::Ready(None) => {
@@ -211,13 +233,15 @@ impl Backend {
                 Poll::Pending => return Ok(()),
             };
 
-            let req = reqs.pop_front().ok_or_else(|| anyhow!("INVALID req not found"))?;
+            let req = reqs
+                .pop_front()
+                .ok_or_else(|| anyhow!("INVALID req not found"))?;
             match packet_res {
                 Ok(pkt) => req.set_result(Ok(pkt)),
                 Err(err) => {
                     tracing::error!("failed to get response from backend: {}", err);
                     req.set_result(Err(anyhow!("backend error")));
-                    return Err(err)
+                    return Err(err);
                 }
             }
         }
@@ -242,13 +266,13 @@ impl Session {
         }
     }
 
-    fn handle(&mut self, cx: &mut Context<'_>, backend: &mut Backend) -> anyhow::Result<()> {
+    fn handle(&mut self, cx: &mut Context<'_>, backends: &mut [Backend]) -> anyhow::Result<()> {
         let writer = &mut self.conn.writer;
         let reader = &mut self.conn.reader;
         let pending_replies = &mut self.pending_replies;
         let packets = &mut self.packets;
 
-        if let Err(err) = Self::handle_read(reader, cx, backend, pending_replies) {
+        if let Err(err) = Self::handle_read(reader, cx, backends, pending_replies) {
             tracing::error!("failed to handle session read: {} {}", err, self.id);
             return Err(err);
         }
@@ -280,14 +304,21 @@ impl Session {
     fn handle_read(
         reader: &mut ConnStream<IndexedResp>,
         cx: &mut Context<'_>,
-        backend: &mut Backend,
-        pending_replies: &mut VecDeque<ReplyReceiver>) -> anyhow::Result<()> {
+        backends: &mut [Backend],
+        pending_replies: &mut VecDeque<ReplyReceiver>,
+    ) -> anyhow::Result<()> {
+        let mut rng = rand::thread_rng();
+
         while let Poll::Ready(item) = reader.as_mut().poll_next(cx) {
             let pkt = match item {
                 None => return Err(anyhow!("session connection closed by peer")),
                 Some(res) => res?,
             };
             let (s, r) = reply_channel(pkt);
+            // Random send
+            let backend = backends
+                .choose_mut(&mut rng)
+                .ok_or_else(|| anyhow!("no backend found"))?;
             backend.send(s);
             pending_replies.push_back(r);
         }

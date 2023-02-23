@@ -10,3 +10,7 @@ run:
 run-debug:
 	RUST_LOG=libredisproxy=info,ultra=info target/debug/ultra-redis-proxy
 
+fmt:
+	cargo fmt
+	cargo clippy
+

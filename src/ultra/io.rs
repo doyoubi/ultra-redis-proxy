@@ -119,7 +119,7 @@ impl IOGroup {
                 }
             }
             for id in err_sessions.into_iter() {
-                tracing::error!("closing failed sessions {} group: {}", id, group_id);
+                tracing::warn!("closing failed sessions {} group: {}", id, group_id);
                 sessions.remove(&id);
                 session_count.fetch_sub(1, Ordering::Relaxed);
             }
@@ -273,7 +273,7 @@ impl Session {
         let packets = &mut self.packets;
 
         if let Err(err) = Self::handle_read(reader, cx, backends, pending_replies) {
-            tracing::error!("failed to handle session read: {} {}", err, self.id);
+            tracing::warn!("failed to handle session read: {} {}", err, self.id);
             return Err(err);
         }
 
